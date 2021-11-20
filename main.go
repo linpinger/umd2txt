@@ -15,6 +15,7 @@ import (
 	"io"
 	"os"
 
+	"github.com/linpinger/foxbook-golang/ebook"
 	"golang.org/x/text/encoding/unicode"
 )
 
@@ -26,11 +27,13 @@ https://blog.csdn.net/lcchuan/article/details/6611898
 
 */
 func main() {
+	var lineHeadStr string // 转mobi/epub时每行开头添加的字符串
 	var umdPath string
 	var outFormat string
 	var bLog bool
 	flag.StringVar(&umdPath, "i", "", "umd File Path")
-	flag.StringVar(&outFormat, "e", "txt", "save format: txt, fml")
+	flag.StringVar(&lineHeadStr, "s", "", "when create epub/mobi, each line head add this String, can be:　　")
+	flag.StringVar(&outFormat, "e", "txt", "save format: txt, fml, epub, mobi")
 	flag.BoolVar(&bLog, "l", false, "show debug log. version: "+verDate+" author: 觉渐(爱尔兰之狐)")
 	flag.Parse() // 处理参数
 
@@ -204,6 +207,7 @@ func main() {
 				}
 
 				// 按章节顺序导出标题，正文
+				var eBook *ebook.EBook
 				var buf bytes.Buffer
 				switch outFormat {
 				case "txt":
@@ -223,6 +227,19 @@ func main() {
 					buf.WriteString("</bookurl>\n\t<delurl></delurl>\n\t<statu>0</statu>\n\t<qidianBookID></qidianBookID>\n\t<author>")
 					buf.WriteString(authorName)
 					buf.WriteString("</author>\n<chapters>\n")
+				case "epub":
+					// eBook = ebook.NewEBook(bookName, outDir+"/FoxEBookTmpDir/")
+					eBook = ebook.NewEBook(bookName, filepath.Join(outDir, "FoxEBookTmpDir"))
+					eBook.SetAuthor(authorName)
+					if bHaveCover {
+						eBook.SetCover("cover.jpg")
+					}
+				case "mobi":
+					eBook = ebook.NewEBook(bookName, filepath.Join(outDir, "FoxEBookTmpDir"))
+					eBook.SetAuthor(authorName)
+					if bHaveCover {
+						eBook.SetCover("cover.jpg")
+					}
 				}
 				pageCount := len(titleList)
 				for i, title := range titleList {
@@ -247,6 +264,28 @@ func main() {
 						buf.WriteString("</content>\n\t<size>")
 						buf.WriteString(strconv.Itoa(len(page)))
 						buf.WriteString("</size>\n</page>\n")
+					case "epub":
+						if strings.Contains(page, "<br />") || strings.Contains(page, "<p>") || strings.Contains(page, "<br/>") {
+							eBook.AddChapter(title, page, 1)
+						} else {
+							page = strings.Replace(page, " ", "&nbsp;", -1)
+							nc := ""
+							for _, line := range strings.Split(page, "\n") {
+								nc = nc + lineHeadStr + line + "<br />\n"
+							}
+							eBook.AddChapter(title, nc, 1)
+						}
+					case "mobi":
+						if strings.Contains(page, "<br />") || strings.Contains(page, "<p>") || strings.Contains(page, "<br/>") {
+							eBook.AddChapter(title, page, 1)
+						} else {
+							page = strings.Replace(page, " ", "&nbsp;", -1)
+							nc := ""
+							for _, line := range strings.Split(page, "\n") {
+								nc = nc + lineHeadStr + line + "<br />\n"
+							}
+							eBook.AddChapter(title, nc, 1)
+						}
 					}
 					log.Println("- 标题:", title)
 					log.Println("- 内容:", page)
@@ -258,6 +297,16 @@ func main() {
 					buf.WriteString("</chapters>\n</novel>\n\n")
 					buf.WriteString("</shelf>\n")
 					os.WriteFile(filepath.Join(outDir, umdNameNoExt+".fml"), buf.Bytes(), 0666)
+				case "epub":
+					eBook.SaveTo(filepath.Join(outDir, umdNameNoExt+".epub"))
+					if bHaveCover {
+						os.Remove("cover.jpg")
+					}
+				case "mobi":
+					eBook.SaveTo(filepath.Join(outDir, umdNameNoExt+".mobi"))
+					if bHaveCover {
+						os.Remove("cover.jpg")
+					}
 				}
 				return
 			case 129: // 0x81 正文结束: 指向正文索引数据块的RandVal
