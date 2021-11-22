@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/binary"
+	"errors"
 	"flag"
 	"fmt"
 	"io/ioutil"
@@ -19,78 +20,104 @@ import (
 	"golang.org/x/text/encoding/unicode"
 )
 
-const verDate string = "2021-11-20"
+const verDate string = "2021-11-21"
 
-/*
-参考:
-https://blog.csdn.net/lcchuan/article/details/6611898
+// 参考: https://blog.csdn.net/lcchuan/article/details/6611898
 
-*/
-func main() {
-	var lineHeadStr string // 转mobi/epub时每行开头添加的字符串
-	var umdPath string
-	var outFormat string
-	var bLog bool
-	flag.StringVar(&umdPath, "i", "", "umd File Path")
-	flag.StringVar(&lineHeadStr, "s", "", "when create epub/mobi, each line head add this String, can be:　　")
-	flag.StringVar(&outFormat, "e", "txt", "save format: txt, fml, epub, mobi")
-	flag.BoolVar(&bLog, "l", false, "show debug log. version: "+verDate+" author: 觉渐(爱尔兰之狐)")
-	flag.Parse() // 处理参数
+// --------- umd 解析库 by Fox
+type UMDReader struct {
+	BookName     string
+	AuthorName   string
+	InfoDate     string
+	InfoType     string
+	InfoPub      string
+	InfoDist     string
+	UMDPath      string
+	UMDDir       string
+	UMDNameNoExt string
+	CoverPath    string
+	TitleList    []string // 章节标题列表
+	ContentList  []string // 章节内容列表
+}
 
-	if 1 == flag.NArg() { // 处理后的参数个数，一般是文件路径
-		umdPath = flag.Arg(0)
-	}
-	if !filepath.IsAbs(umdPath) {
-		umdAbsPath, err := filepath.Abs(umdPath)
+func NewUMDReader(umdPath string) *UMDReader {
+	var umd UMDReader
+
+	umd.UMDPath = umdPath
+	umd.BookName = "书名"
+	umd.AuthorName = "作者"
+	umd.InfoDate = "2000-00-00"
+	umd.InfoType = "类型"
+	umd.InfoPub = "出版商"
+	umd.InfoDist = "零售商"
+
+	umd.CoverPath = ""
+
+	umd.splitFilePath()
+	umd.readUMD()
+
+	return &umd
+}
+func (umd *UMDReader) GetBookName() string {
+	return umd.BookName
+}
+func (umd *UMDReader) GetAuthorName() string {
+	return umd.AuthorName
+}
+func (umd *UMDReader) GetInfoDate() string {
+	return umd.InfoDate
+}
+func (umd *UMDReader) GetInfoPub() string {
+	return umd.InfoPub
+}
+func (umd *UMDReader) GetInfoDist() string {
+	return umd.InfoDist
+}
+func (umd *UMDReader) GetInfoType() string {
+	return umd.InfoType
+}
+
+func (umd *UMDReader) splitFilePath() error {
+	if !filepath.IsAbs(umd.UMDPath) {
+		umdAbsPath, err := filepath.Abs(umd.UMDPath)
 		if err != nil {
 			log.Println("# Error: get umd absolute Path:", err)
-			os.Exit(1)
+			return err
 		}
-		umdPath = umdAbsPath
+		umd.UMDPath = umdAbsPath
 	}
-	outDir, umdName := filepath.Split(umdPath)
-	umdNameNoExt := strings.Replace(umdName, filepath.Ext(umdPath), "", -1)
+	outDir, umdName := filepath.Split(umd.UMDPath)
+	umdNameNoExt := strings.Replace(umdName, filepath.Ext(umd.UMDPath), "", -1)
+	umd.UMDDir = outDir
+	umd.UMDNameNoExt = umdNameNoExt
+	return nil
+}
 
-	if "" == umdName {
-		fmt.Println("# usage: umd2ebook -h")
-		os.Exit(0)
-	}
-	if !bLog {
-		log.SetOutput(ioutil.Discard)
-	}
-
-	log.Println("# start")
-
-	fileUMD, err := os.OpenFile(umdPath, os.O_RDONLY, 0644)
+// TODO: 一次性读入
+func (umd *UMDReader) readUMD() error {
+	fileUMD, err := os.OpenFile(umd.UMDPath, os.O_RDONLY, 0644)
 	if err != nil {
 		log.Println("# Error: open File:", err)
-		return
+		return err
 	}
 
-	var dataOffList []uint32 = make([]uint32, 0) // 数据块偏移顺序列表，合并正文按这个先后顺序
-	var contentBytes []byte = make([]byte, 0)    // 正文内容块
-	var contentLen uint32                        // 正文长度
-	var idContentBlocks uint32                   // 数据标识: 正文块列表
-	var idTitleList uint32                       // 数据标识: 章节标题
-	var titleList []string = make([]string, 0)   // 章节标题列表
-	var idChapterList uint32                     // 数据标识: 章节偏移
-	var offList []uint32 = make([]uint32, 0)     // 章节偏移列表
-	var bHaveCover bool = false                  // 是否有封面
-	var idCover uint32                           // 封面
+	var dataOffList []uint32    // 数据块偏移顺序列表，合并正文按这个先后顺序
+	var contentBytes []byte     // 正文内容块
+	var contentLen uint32       // 正文长度
+	var idContentBlocks uint32  // 数据标识: 正文块列表
+	var idTitleList uint32      // 数据标识: 章节标题
+	var idChapterList uint32    // 数据标识: 章节偏移
+	var offList []uint32        // 章节偏移列表
+	var bHaveCover bool = false // 是否有封面
+	var idCover uint32          // 封面
 
 	var (
-		bookName   = ""
-		authorName = ""
-		strYear    = ""
-		strMonth   = ""
-		strDay     = ""
-		strType    = ""
-		strPub     = ""
-		strDis     = ""
+		strYear  = ""
+		strMonth = ""
+		strDay   = ""
 	)
 	// 存储{数据标识:正文内容}
-	var mapIDContent map[uint32][]byte
-	mapIDContent = make(map[uint32][]byte)
+	var mapIDContent map[uint32][]byte = make(map[uint32][]byte)
 
 	// umd格式MagicNum: 0x89 9B 9A DE
 	var offset int64 = 4
@@ -100,7 +127,7 @@ func main() {
 		_, err = fileUMD.ReadAt(block, offset)
 		if err != nil {
 			log.Println("# Error: read block:", offset, err)
-			return
+			return err
 		}
 
 		if 35 == block[0] {
@@ -114,7 +141,7 @@ func main() {
 			_, err = fileUMD.ReadAt(content, offset+5)
 			if err != nil {
 				log.Println("# Error: read content:", offset+5, err)
-				return
+				return err
 			}
 
 			switch funcID {
@@ -123,14 +150,14 @@ func main() {
 					log.Println("  - 文本umd文件头:", content)
 				} else {
 					log.Println("  # 非文本umd，退出:", content)
-					break
+					return errors.New("# Error: not text type UMD")
 				}
 			case 2: //文件标题
-				bookName = unicodeLBytes2String(content)
-				log.Println("  - 文件标题:", bookName)
+				umd.BookName = unicodeLBytes2String(content)
+				log.Println("  - 文件标题:", umd.BookName)
 			case 3: // 作者
-				authorName = unicodeLBytes2String(content)
-				log.Println("  - 作者:", authorName)
+				umd.AuthorName = unicodeLBytes2String(content)
+				log.Println("  - 作者:", umd.AuthorName)
 			case 4:
 				strYear = unicodeLBytes2String(content)
 				log.Println("  - 年:", strYear)
@@ -141,14 +168,14 @@ func main() {
 				strDay = unicodeLBytes2String(content)
 				log.Println("  - 日:", strDay)
 			case 7:
-				strType = unicodeLBytes2String(content)
-				log.Println("  - 小说类型:", strType)
+				umd.InfoType = unicodeLBytes2String(content)
+				log.Println("  - 小说类型:", umd.InfoType)
 			case 8:
-				strPub = unicodeLBytes2String(content)
-				log.Println("  - 出版商:", strPub)
+				umd.InfoPub = unicodeLBytes2String(content)
+				log.Println("  - 出版商:", umd.InfoPub)
 			case 9:
-				strDis = unicodeLBytes2String(content)
-				log.Println("  - 零售商:", strDis)
+				umd.InfoDist = unicodeLBytes2String(content)
+				log.Println("  - 零售商:", umd.InfoDist)
 			case 10: // 0x0A CONTENT ID
 				log.Println("  - 0x0A CONTENT ID:", content)
 			case 11: // 0x0B 内容长度:小说未压缩时的内容总长度（字节）
@@ -170,7 +197,7 @@ func main() {
 				ttOffset := 0
 				for {
 					lenTitle := uint8(dataTitles[ttOffset])
-					titleList = append(titleList, unicodeLBytes2String(dataTitles[ttOffset+1:ttOffset+1+int(lenTitle)]))
+					umd.TitleList = append(umd.TitleList, unicodeLBytes2String(dataTitles[ttOffset+1:ttOffset+1+int(lenTitle)]))
 					ttOffset += 1 + int(lenTitle)
 					// fmt.Println("  - 章节标题:", unicodeLBytes2String(strTitle), " len:", lenTitle, "ttOffset:", ttOffset, ">=", lenData)
 					if ttOffset >= lenData {
@@ -202,113 +229,25 @@ func main() {
 				log.Println("- 正文块 Len:", len(contentBytes), "应该长度:", contentLen)
 				// os.WriteFile("T:/content.bin", contentBytes[:contentLen], 0666)
 
+				umd.InfoDate = strYear + "-" + strMonth + "-" + strDay
 				if bHaveCover {
-					os.WriteFile("cover.jpg", mapIDContent[idCover], 0666)
+					umd.CoverPath = filepath.Join(umd.UMDDir, "cover.jpg")
+					os.WriteFile(umd.CoverPath, mapIDContent[idCover], 0666)
 				}
 
 				// 按章节顺序导出标题，正文
-				var eBook *ebook.EBook
-				var buf bytes.Buffer
-				switch outFormat {
-				case "txt":
-					buf.WriteString(fmt.Sprintln("书名:", bookName))
-					buf.WriteString(fmt.Sprintln("作者:", authorName))
-					buf.WriteString(fmt.Sprintln("日期:", strYear+"-"+strMonth+"-"+strDay))
-					buf.WriteString(fmt.Sprintln("类型:", strType))
-					buf.WriteString(fmt.Sprintln("出版:", strPub))
-					buf.WriteString(fmt.Sprintln("零售:", strDis))
-					buf.WriteString("\n\n")
-				case "fml":
-					buf.WriteString("<?xml version=\"1.0\" encoding=\"utf-8\"?>\n\n<shelf>\n\n")
-					buf.WriteString("<novel>\n\t<bookname>")
-					buf.WriteString(bookName)
-					buf.WriteString("</bookname>\n\t<bookurl>")
-					buf.WriteString(umdPath)
-					buf.WriteString("</bookurl>\n\t<delurl></delurl>\n\t<statu>0</statu>\n\t<qidianBookID></qidianBookID>\n\t<author>")
-					buf.WriteString(authorName)
-					buf.WriteString("</author>\n<chapters>\n")
-				case "epub":
-					// eBook = ebook.NewEBook(bookName, outDir+"/FoxEBookTmpDir/")
-					eBook = ebook.NewEBook(bookName, filepath.Join(outDir, "FoxEBookTmpDir"))
-					eBook.SetAuthor(authorName)
-					if bHaveCover {
-						eBook.SetCover("cover.jpg")
-					}
-				case "mobi":
-					eBook = ebook.NewEBook(bookName, filepath.Join(outDir, "FoxEBookTmpDir"))
-					eBook.SetAuthor(authorName)
-					if bHaveCover {
-						eBook.SetCover("cover.jpg")
-					}
-				}
-				pageCount := len(titleList)
-				for i, title := range titleList {
+				pageCount := len(umd.TitleList)
+				for i, _ := range umd.TitleList {
 					var page string
 					if pageCount == i+1 { // 最后一章
 						page = unicodeLBytes2String(contentBytes[offList[i]:contentLen])
 					} else {
 						page = unicodeLBytes2String(contentBytes[offList[i]:offList[i+1]])
 					}
-					switch outFormat {
-					case "txt":
-						buf.WriteString("\n## ")
-						buf.WriteString(title)
-						buf.WriteString("\n\n")
-						buf.WriteString(page)
-						buf.WriteString("\n\n")
-					case "fml":
-						buf.WriteString("<page>\n\t<pagename>")
-						buf.WriteString(title)
-						buf.WriteString("</pagename>\n\t<pageurl></pageurl>\n\t<content>")
-						buf.WriteString(page)
-						buf.WriteString("</content>\n\t<size>")
-						buf.WriteString(strconv.Itoa(len(page)))
-						buf.WriteString("</size>\n</page>\n")
-					case "epub":
-						if strings.Contains(page, "<br />") || strings.Contains(page, "<p>") || strings.Contains(page, "<br/>") {
-							eBook.AddChapter(title, page, 1)
-						} else {
-							page = strings.Replace(page, " ", "&nbsp;", -1)
-							nc := ""
-							for _, line := range strings.Split(page, "\n") {
-								nc = nc + lineHeadStr + line + "<br />\n"
-							}
-							eBook.AddChapter(title, nc, 1)
-						}
-					case "mobi":
-						if strings.Contains(page, "<br />") || strings.Contains(page, "<p>") || strings.Contains(page, "<br/>") {
-							eBook.AddChapter(title, page, 1)
-						} else {
-							page = strings.Replace(page, " ", "&nbsp;", -1)
-							nc := ""
-							for _, line := range strings.Split(page, "\n") {
-								nc = nc + lineHeadStr + line + "<br />\n"
-							}
-							eBook.AddChapter(title, nc, 1)
-						}
-					}
-					log.Println("- 标题:", title)
-					log.Println("- 内容:", page)
+					umd.ContentList = append(umd.ContentList, page)
 				}
-				switch outFormat {
-				case "txt":
-					os.WriteFile(filepath.Join(outDir, umdNameNoExt+".txt"), buf.Bytes(), 0666)
-				case "fml":
-					buf.WriteString("</chapters>\n</novel>\n\n")
-					buf.WriteString("</shelf>\n")
-					os.WriteFile(filepath.Join(outDir, umdNameNoExt+".fml"), buf.Bytes(), 0666)
-				case "epub":
-					eBook.SaveTo(filepath.Join(outDir, umdNameNoExt+".epub"))
-					if bHaveCover {
-						os.Remove("cover.jpg")
-					}
-				case "mobi":
-					eBook.SaveTo(filepath.Join(outDir, umdNameNoExt+".mobi"))
-					if bHaveCover {
-						os.Remove("cover.jpg")
-					}
-				}
-				return
+
+				return nil
 			case 129: // 0x81 正文结束: 指向正文索引数据块的RandVal
 				idContentBlocks = bytes2Uint32(content)
 				log.Println("  - 0x81 正文结束:", content)
@@ -349,7 +288,7 @@ func main() {
 			_, err = fileUMD.ReadAt(content, offset+9)
 			if err != nil {
 				log.Println("# Error: read content:", offset+9, err)
-				return
+				return err
 			}
 			mapIDContent[dataID] = content // 数据块存入map
 			// fmt.Println("  - 数据内容:", content)
@@ -357,7 +296,156 @@ func main() {
 			offset += int64(dataLen)
 		} else {
 			log.Println("- 未知块:", block)
-			break
+			return errors.New("# Error: uknown block: " + string(block))
+		}
+	}
+	return nil
+}
+
+func (umd *UMDReader) GetChapterCount() int {
+	return len(umd.TitleList)
+}
+func (umd *UMDReader) GetTitleAt(idx int) string {
+	if idx < 0 || idx >= len(umd.TitleList) {
+		return ""
+	}
+	return umd.TitleList[idx]
+}
+func (umd *UMDReader) GetContentAt(idx int) string {
+	if idx < 0 || idx >= len(umd.ContentList) {
+		return ""
+	}
+	return umd.ContentList[idx]
+}
+
+func (umd *UMDReader) GetCoverPath() string {
+	return umd.CoverPath
+}
+
+// --------- umd 解析库 by Fox
+
+func main() {
+	var lineHeadStr string // 转mobi/epub时每行开头添加的字符串
+	var umdPath string
+	var outFormat string
+	var bLog bool
+	flag.StringVar(&umdPath, "i", "", "umd File Path")
+	flag.StringVar(&lineHeadStr, "s", "", "when create epub/mobi, each line head add this String, can be:　　")
+	flag.StringVar(&outFormat, "e", "txt", "save format: txt, fml, epub, mobi")
+	flag.BoolVar(&bLog, "l", false, "show debug log. version: "+verDate+" author: 觉渐(爱尔兰之狐)")
+	flag.Parse() // 处理参数
+
+	if 1 == flag.NArg() { // 处理后的参数个数，一般是文件路径
+		umdPath = flag.Arg(0)
+	} else {
+		fmt.Println("# usage: umd2ebook -h")
+		os.Exit(0)
+	}
+	if !bLog {
+		log.SetOutput(ioutil.Discard)
+	}
+
+	log.Println("# start")
+
+	umd := NewUMDReader(umdPath)
+
+	// 导出标题，正文
+	var eBook *ebook.EBook
+	var buf bytes.Buffer
+	switch outFormat {
+	case "txt":
+		buf.WriteString(fmt.Sprintln("书名:", umd.GetBookName()))
+		buf.WriteString(fmt.Sprintln("作者:", umd.GetAuthorName()))
+		buf.WriteString(fmt.Sprintln("日期:", umd.GetInfoDate()))
+		buf.WriteString(fmt.Sprintln("类型:", umd.GetInfoType()))
+		buf.WriteString(fmt.Sprintln("出版:", umd.GetInfoPub()))
+		buf.WriteString(fmt.Sprintln("零售:", umd.GetInfoDist()))
+		buf.WriteString("\n\n")
+	case "fml":
+		buf.WriteString("<?xml version=\"1.0\" encoding=\"utf-8\"?>\n\n<shelf>\n\n")
+		buf.WriteString("<novel>\n\t<bookname>")
+		buf.WriteString(umd.GetBookName())
+		buf.WriteString("</bookname>\n\t<bookurl>file:///")
+		buf.WriteString(strings.Replace(umd.UMDPath, "\\", "/", -1))
+		buf.WriteString(fmt.Sprintf("?date=%s&type=%s&pub=%s&dist=%s", umd.GetInfoDate(), umd.GetInfoType(), umd.GetInfoPub(), umd.GetInfoDist()))
+		buf.WriteString("</bookurl>\n\t<delurl></delurl>\n\t<statu>0</statu>\n\t<qidianBookID></qidianBookID>\n\t<author>")
+		buf.WriteString(umd.GetAuthorName())
+		buf.WriteString("</author>\n<chapters>\n")
+	case "epub":
+		eBook = ebook.NewEBook(umd.GetBookName(), filepath.Join(umd.UMDDir, "FoxEBookTmpDir"))
+		eBook.SetAuthor(umd.GetAuthorName())
+		if "" != umd.GetCoverPath() {
+			eBook.SetCover(umd.GetCoverPath())
+		}
+	case "mobi":
+		eBook = ebook.NewEBook(umd.GetBookName(), filepath.Join(umd.UMDDir, "FoxEBookTmpDir"))
+		eBook.SetAuthor(umd.GetAuthorName())
+		if "" != umd.GetCoverPath() {
+			eBook.SetCover(umd.GetCoverPath())
+		}
+	}
+	pageCount := umd.GetChapterCount()
+	for i := 0; i < pageCount; i++ {
+		title := umd.GetTitleAt(i)
+		page := umd.GetContentAt(i)
+
+		switch outFormat {
+		case "txt":
+			buf.WriteString("\n## ")
+			buf.WriteString(title)
+			buf.WriteString("\n\n")
+			buf.WriteString(page)
+			buf.WriteString("\n\n")
+		case "fml":
+			buf.WriteString("<page>\n\t<pagename>")
+			buf.WriteString(title)
+			buf.WriteString("</pagename>\n\t<pageurl></pageurl>\n\t<content>")
+			buf.WriteString(page)
+			buf.WriteString("</content>\n\t<size>")
+			buf.WriteString(strconv.Itoa(len(page)))
+			buf.WriteString("</size>\n</page>\n")
+		case "epub":
+			if strings.Contains(page, "<br />") || strings.Contains(page, "<p>") || strings.Contains(page, "<br/>") {
+				eBook.AddChapter(title, page, 1)
+			} else {
+				page = strings.Replace(page, " ", "&nbsp;", -1)
+				nc := ""
+				for _, line := range strings.Split(page, "\n") {
+					nc = nc + lineHeadStr + line + "<br />\n"
+				}
+				eBook.AddChapter(title, nc, 1)
+			}
+		case "mobi":
+			if strings.Contains(page, "<br />") || strings.Contains(page, "<p>") || strings.Contains(page, "<br/>") {
+				eBook.AddChapter(title, page, 1)
+			} else {
+				page = strings.Replace(page, " ", "&nbsp;", -1)
+				nc := ""
+				for _, line := range strings.Split(page, "\n") {
+					nc = nc + lineHeadStr + line + "<br />\n"
+				}
+				eBook.AddChapter(title, nc, 1)
+			}
+		}
+		log.Println("- 标题:", title)
+		log.Println("- 内容:", page)
+	}
+	switch outFormat {
+	case "txt":
+		os.WriteFile(filepath.Join(umd.UMDDir, umd.UMDNameNoExt+".txt"), buf.Bytes(), 0666)
+	case "fml":
+		buf.WriteString("</chapters>\n</novel>\n\n")
+		buf.WriteString("</shelf>\n")
+		os.WriteFile(filepath.Join(umd.UMDDir, umd.UMDNameNoExt+".fml"), buf.Bytes(), 0666)
+	case "epub":
+		eBook.SaveTo(filepath.Join(umd.UMDDir, umd.UMDNameNoExt+".epub"))
+		if "" != umd.GetCoverPath() {
+			os.Remove(umd.GetCoverPath())
+		}
+	case "mobi":
+		eBook.SaveTo(filepath.Join(umd.UMDDir, umd.UMDNameNoExt+".mobi"))
+		if "" != umd.GetCoverPath() {
+			os.Remove(umd.GetCoverPath())
 		}
 	}
 
