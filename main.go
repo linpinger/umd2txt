@@ -14,7 +14,7 @@ import (
 	"github.com/linpinger/foxbook-golang/ebook"
 )
 
-const verDate string = "2021-11-22"
+const verDate string = "2021-12-13"
 
 func main() {
 	var lineHeadStr string // 转mobi/epub时每行开头添加的字符串
@@ -23,13 +23,14 @@ func main() {
 	var bLog bool
 	flag.StringVar(&umdPath, "i", "", "umd File Path")
 	flag.StringVar(&lineHeadStr, "s", "", "when create epub/mobi, each line head add this String, can be:　　")
-	flag.StringVar(&outFormat, "e", "txt", "save format: txt, fml, epub, mobi")
+	flag.StringVar(&outFormat, "e", "txt", "save format: txt, fml, epub, mobi, azw3")
 	flag.BoolVar(&bLog, "l", false, "show debug log. version: "+verDate+" author: 觉渐(爱尔兰之狐)")
 	flag.Parse() // 处理参数
 
 	if 1 == flag.NArg() { // 处理后的参数个数，一般是文件路径
 		umdPath = flag.Arg(0)
-	} else {
+	}
+	if "" == umdPath {
 		fmt.Println("# usage: umd2ebook -h")
 		os.Exit(0)
 	}
@@ -39,10 +40,11 @@ func main() {
 
 	log.Println("# start")
 
-	umd := NewUMDReader(umdPath)
+	umd := ebook.NewUMDReader(umdPath)
+	eBookSavePath := filepath.Join(umd.GetUMDDir(), umd.GetUMDNameNoExt()+"."+outFormat)
 
 	// 导出标题，正文
-	var eBook *ebook.EBook
+	var bk *ebook.EPubWriter
 	var buf bytes.Buffer
 	switch outFormat {
 	case "txt":
@@ -63,17 +65,12 @@ func main() {
 		buf.WriteString("</bookurl>\n\t<delurl></delurl>\n\t<statu>0</statu>\n\t<qidianBookID></qidianBookID>\n\t<author>")
 		buf.WriteString(umd.GetAuthorName())
 		buf.WriteString("</author>\n<chapters>\n")
-	case "epub":
-		eBook = ebook.NewEBook(umd.GetBookName(), filepath.Join(umd.GetUMDDir(), "FoxEBookTmpDir"))
-		eBook.SetAuthor(umd.GetAuthorName())
+	default:
+		bk = ebook.NewEPubWriter(umd.GetBookName(), eBookSavePath)
+		bk.SetTempDir(umd.GetUMDDir())
+		bk.SetAuthor(umd.GetAuthorName())
 		if "" != umd.GetCoverPath() {
-			eBook.SetCover(umd.GetCoverPath())
-		}
-	case "mobi":
-		eBook = ebook.NewEBook(umd.GetBookName(), filepath.Join(umd.GetUMDDir(), "FoxEBookTmpDir"))
-		eBook.SetAuthor(umd.GetAuthorName())
-		if "" != umd.GetCoverPath() {
-			eBook.SetCover(umd.GetCoverPath())
+			bk.SetCover(umd.GetCoverPath())
 		}
 	}
 	pageCount := umd.GetChapterCount()
@@ -95,27 +92,16 @@ func main() {
 			buf.WriteString("</content>\n\t<size>")
 			buf.WriteString(strconv.Itoa(len(page)))
 			buf.WriteString("</size>\n</page>\n")
-		case "epub":
+		default:
 			if strings.Contains(page, "<br />") || strings.Contains(page, "<p>") || strings.Contains(page, "<br/>") {
-				eBook.AddChapter(title, page, 1)
+				bk.AddChapter(title, page)
 			} else {
 				page = strings.Replace(page, " ", "&nbsp;", -1)
 				nc := ""
 				for _, line := range strings.Split(page, "\n") {
 					nc = nc + lineHeadStr + line + "<br />\n"
 				}
-				eBook.AddChapter(title, nc, 1)
-			}
-		case "mobi":
-			if strings.Contains(page, "<br />") || strings.Contains(page, "<p>") || strings.Contains(page, "<br/>") {
-				eBook.AddChapter(title, page, 1)
-			} else {
-				page = strings.Replace(page, " ", "&nbsp;", -1)
-				nc := ""
-				for _, line := range strings.Split(page, "\n") {
-					nc = nc + lineHeadStr + line + "<br />\n"
-				}
-				eBook.AddChapter(title, nc, 1)
+				bk.AddChapter(title, nc)
 			}
 		}
 		log.Println("- 标题:", title)
@@ -123,18 +109,14 @@ func main() {
 	}
 	switch outFormat {
 	case "txt":
-		os.WriteFile(filepath.Join(umd.GetUMDDir(), umd.GetUMDNameNoExt()+".txt"), buf.Bytes(), 0666)
+		os.WriteFile(eBookSavePath, buf.Bytes(), 0666)
 	case "fml":
 		buf.WriteString("</chapters>\n</novel>\n\n")
 		buf.WriteString("</shelf>\n")
-		os.WriteFile(filepath.Join(umd.GetUMDDir(), umd.GetUMDNameNoExt()+".fml"), buf.Bytes(), 0666)
-	case "epub":
-		eBook.SaveTo(filepath.Join(umd.GetUMDDir(), umd.GetUMDNameNoExt()+".epub"))
-		if "" != umd.GetCoverPath() {
-			os.Remove(umd.GetCoverPath())
-		}
-	case "mobi":
-		eBook.SaveTo(filepath.Join(umd.GetUMDDir(), umd.GetUMDNameNoExt()+".mobi"))
+		os.WriteFile(eBookSavePath, buf.Bytes(), 0666)
+	default:
+		bk.SetMobiUseHideArg()
+		bk.SaveTo()
 		if "" != umd.GetCoverPath() {
 			os.Remove(umd.GetCoverPath())
 		}
