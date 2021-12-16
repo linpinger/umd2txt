@@ -14,6 +14,7 @@
 
 ## 日志
 
+- 2021-12-16: 折腾: 将库放到golib中了，更换了一下引用
 - 2021-12-13: 将UMDReader放到 `github.com/linpinger/foxbook-golang/ebook` 目录中了，添加了azw3支持
 - 2021-11-22: 从分段读取文件改为一次性读取到[]byte
 - 2021-11-21: 将UMDReader分离

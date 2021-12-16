@@ -11,7 +11,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/linpinger/foxbook-golang/ebook"
+	"github.com/linpinger/golib/ebook"
 )
 
 const verDate string = "2021-12-13"
